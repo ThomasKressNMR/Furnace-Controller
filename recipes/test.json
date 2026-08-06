@@ -1,0 +1,30 @@
+{
+  "limits": {
+    "max_temperature": 1200.0,
+    "min_rate": -6.5,
+    "max_rate": 27.5,
+    "temperature_tolerance": 2.0
+  },
+  "start_temperature": 100.0,
+  "segments": [
+    {
+      "title": "Heating up",
+      "type": "rate-limited",
+      "wait_for_temperature": false,
+      "target": 1000.0,
+      "rate": 6.5
+    },
+    {
+      "title": "Annealing 1",
+      "type": "hold",
+      "time": 15.0
+    },
+    {
+      "title": "Ramping up",
+      "type": "rate-limited",
+      "target": 20.0,
+      "rate": 6.5
+    }
+  ],
+  "total_experiment_time_min": 304.23
+}

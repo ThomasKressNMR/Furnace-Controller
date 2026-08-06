@@ -1,0 +1,20 @@
+{
+  "default_folder_path": "../recipes",
+  "last_file": "test.json",
+  "last_port": "/dev/cu.usbmodem2101",
+  "esp32": {
+    "measurement": "TS1-1200",
+    "log_interval": 1.0
+  },
+  "eurotherm": {
+    "ip": "192.168.111.222",
+    "port": 502,
+    "poll_interval": 1.0,
+    "measurement": "TS1-1200"
+  },
+  "limits": {
+    "max_temp": 1200.0,
+    "min_rate": -6.5,
+    "max_rate": 6.7
+  }
+}

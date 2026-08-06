@@ -1,0 +1,8 @@
+streamlit
+plotly
+influxdb-client
+matplotlib
+pandas
+python-dotenv
+tqdm
+pyserial
