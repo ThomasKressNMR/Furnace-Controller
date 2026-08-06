@@ -14,6 +14,23 @@ from pathlib import Path
 import plotly.graph_objects as go
 import streamlit as st
 
+import copy
+import json
+from pathlib import Path
+
+import streamlit as st
+from profile_utils import (
+    CONFIG_FILE_PATH,
+    PARAM_FILE_PATH,
+    SEGMENT_TYPES,
+    calculate_total_time_min,
+    generate_profiles,
+    load_app_config,
+    plot_profile_plotly,
+    update_config_key,
+    validate_profile,
+)
+
 PARAM_FILE_PATH = Path("param.json")
 CONFIG_FILE_PATH = Path("config.json")
 SEGMENT_TYPES = ["hold", "rate-limited", "time-limited"]
@@ -44,32 +61,6 @@ CONTINUOUS_TEMP_LIMIT = MAX_TEMP - 100.0
 # Config & State Initialization
 # ----------------------------------------------------------------------
 
-def load_app_config() -> dict:
-    """Load settings from config.json or return default fallbacks."""
-    default_config = {
-        "default_folder_path": ".",
-        "last_file": "profile.json"
-    }
-    if CONFIG_FILE_PATH.exists():
-        try:
-            with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                default_config.update(data)
-        except Exception:
-            pass
-    return default_config
-
-
-def update_config_key(**kwargs):
-    """Update only specific key(s) in config.json without touching anything else."""
-    config = load_app_config()
-    config.update(kwargs)
-    try:
-        with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-    except Exception as e:
-        st.error(f"Failed to update config.json: {e}")
-
 
 def load_default_profile() -> dict:
     """Load default profile strictly from param.json or create fallback dict."""
@@ -86,28 +77,6 @@ def load_default_profile() -> dict:
         "start_temperature": 25.0,
         "segments": []
     }
-
-
-def calculate_total_time_min(profile: dict) -> float:
-    """Calculate the total duration of the profile in minutes."""
-    sp = profile.get("start_temperature", 25.0)
-    t_min = 0.0
-
-    for seg in profile.get("segments", []):
-        typ = seg.get("type")
-        if typ == "rate-limited":
-            target = seg.get("target", sp)
-            rate = seg.get("rate", 0.0)
-            if rate != 0:
-                t_min += abs(target - sp) / abs(rate)
-            sp = target
-        elif typ == "time-limited":
-            t_min += seg.get("time", 0.0)
-            sp = seg.get("target", sp)
-        elif typ == "hold":
-            t_min += seg.get("time", 0.0)
-
-    return round(t_min, 2)
 
 
 st.set_page_config(page_title="Temperature Profile Builder", layout="wide")
@@ -181,220 +150,6 @@ def on_folder_path_change():
 # Core logic (validation + generation)
 # ----------------------------------------------------------------------
 
-def validate_profile(profile):
-    """
-    Raise ValueError on fatal hardcoded constraints and return a list of non-fatal warnings.
-    """
-    warnings = []
-
-    # Check start temperature
-    if profile.get("start_temperature", 25.0) > MAX_TEMP:
-        raise ValueError(
-            f"Start temperature ({profile['start_temperature']} °C) exceeds absolute maximum limit ({MAX_TEMP} °C)"
-        )
-
-    if profile.get("start_temperature", 25.0) > CONTINUOUS_TEMP_LIMIT:
-        warnings.append(
-            f"Warning: Start temperature ({profile['start_temperature']:.1f} °C) is within 100 °C of the maximum limit ({MAX_TEMP:.1f} °C). "
-            "Continuous operation in this range can accelerate component degradation."
-        )
-
-    current_sp = profile.get("start_temperature", 25.0)
-
-    for i, segment in enumerate(profile.get("segments", []), start=1):
-        typ = segment["type"]
-
-        if typ not in SEGMENT_TYPES:
-            raise ValueError(f"Segment {i}: unknown type '{typ}'")
-
-        if typ in ("rate-limited", "time-limited"):
-            target = segment["target"]
-            if target > MAX_TEMP:
-                raise ValueError(
-                    f"Segment {i}: target {target} °C exceeds absolute maximum temperature {MAX_TEMP} °C"
-                )
-
-            if target > CONTINUOUS_TEMP_LIMIT:
-                warnings.append(
-                    f"Warning: Segment {i} target temperature ({target:.1f} °C) is above {CONTINUOUS_TEMP_LIMIT:.1f} °C. Continuous operation accelerates component degradation."
-                )
-
-        if typ == "rate-limited":
-            rate = segment["rate"]
-            if rate == 0:
-                raise ValueError(f"Segment {i}: rate cannot be 0")
-
-            if rate > 0 and rate > MAX_RATE:
-                raise ValueError(
-                    f"Segment {i}: heating rate {rate} °C/min exceeds maximum allowed rate of {MAX_RATE} °C/min"
-                )
-            elif rate < 0 and rate < MIN_RATE:
-                raise ValueError(
-                    f"Segment {i}: cooling rate {rate} °C/min exceeds maximum allowed cooling limit of {MIN_RATE} °C/min"
-                )
-            current_sp = segment["target"]
-
-        elif typ == "time-limited":
-            time_duration = segment.get("time", 0.0)
-            if time_duration <= 0:
-                raise ValueError(f"Segment {i}: time duration must be greater than 0")
-
-            target = segment["target"]
-            calculated_rate = (target - current_sp) / time_duration
-
-            if calculated_rate > 0 and calculated_rate > MAX_RATE:
-                raise ValueError(
-                    f"Segment {i}: calculated rate ({calculated_rate:.2f} °C/min) exceeds max rate limit of {MAX_RATE} °C/min"
-                )
-            elif calculated_rate < 0 and calculated_rate < MIN_RATE:
-                raise ValueError(
-                    f"Segment {i}: calculated rate ({calculated_rate:.2f} °C/min) exceeds cooling rate limit of {MIN_RATE} °C/min"
-                )
-            current_sp = target
-
-        elif typ == "hold":
-            if "time" in segment and segment["time"] < 0:
-                raise ValueError(f"Segment {i}: hold time cannot be negative")
-
-    # Safe unloading check
-    if current_sp >= 50.0:
-        warnings.append(
-            f"Warning: Final profile temperature is {current_sp:.1f} °C. "
-            "It is recommended that the profile ends below 50 °C for safe sample unloading."
-        )
-
-    return warnings
-
-
-def generate_profiles(profile):
-    """Generate setpoint (sp) traces and segment metadata in HOURS, with slopes in °C/min."""
-    start_temp = profile.get("start_temperature", 25.0)
-
-    sp_time, sp_temp = [0.0], [start_temp]
-    annotations = []
-    segment_info = []
-
-    t_min = 0.0
-    sp = start_temp
-
-    for segment in profile.get("segments", []):
-        segment_start_h = t_min / 60.0
-        typ = segment["type"]
-        title = segment.get("title", typ)
-
-        if typ == "rate-limited":
-            target = segment["target"]
-            rate = segment["rate"]  # in °C/min
-            duration_min = abs(target - sp) / abs(rate) if rate != 0 else 0.0
-
-            start_sp = sp
-            t_min += duration_min
-            t_h = t_min / 60.0
-            duration_h = duration_min / 60.0
-            sp = target
-
-            sp_time.append(t_h)
-            sp_temp.append(sp)
-
-            annotations.append({
-                "x": (segment_start_h + t_h) / 2.0,
-                "y": (start_sp + sp) / 2.0,
-                "text": f"{title}<br>{duration_h:.2f} h | {rate:+.2f} °C/min",
-            })
-
-        elif typ == "time-limited":
-            target = segment["target"]
-            duration_min = segment.get("time", 0.0)
-            calculated_rate_min = (target - sp) / duration_min if duration_min > 0 else 0.0
-
-            start_sp = sp
-            t_min += duration_min
-            t_h = t_min / 60.0
-            duration_h = duration_min / 60.0
-            sp = target
-
-            sp_time.append(t_h)
-            sp_temp.append(sp)
-
-            annotations.append({
-                "x": (segment_start_h + t_h) / 2.0,
-                "y": (start_sp + sp) / 2.0,
-                "text": f"{title}<br>{duration_h:.2f} h | {calculated_rate_min:+.2f} °C/min",
-            })
-
-        elif typ == "hold":
-            hold_time_min = segment.get("time", 0.0)
-            start_sp = sp
-            t_min += hold_time_min
-            t_h = t_min / 60.0
-            hold_time_h = hold_time_min / 60.0
-
-            sp_time.append(t_h)
-            sp_temp.append(sp)
-
-            if hold_time_min > 0:
-                annotations.append({
-                    "x": (segment_start_h + t_h) / 2.0,
-                    "y": start_sp,
-                    "text": f"{title}<br>{hold_time_h:.2f} h",
-                })
-
-        segment_info.append({"start": segment_start_h, "end": t_min / 60.0, "title": title})
-
-    return sp_time, sp_temp, annotations, segment_info
-
-
-def plot_profile_plotly(sp_time, sp_temp, annotations, segment_info):
-    """Build and return an interactive Plotly Figure with time in hours."""
-    fig = go.Figure()
-
-    colors = [
-        "rgba(31, 119, 180, 0.12)", "rgba(255, 127, 14, 0.12)",
-        "rgba(44, 160, 44, 0.12)", "rgba(214, 39, 40, 0.12)",
-        "rgba(148, 103, 189, 0.12)", "rgba(140, 86, 75, 0.12)",
-    ]
-
-    for i, segment in enumerate(segment_info):
-        fig.add_vrect(
-            x0=segment["start"], x1=segment["end"],
-            fillcolor=colors[i % len(colors)],
-            layer="below", line_width=0,
-            annotation_text=segment["title"],
-            annotation_position="top",
-            annotation_font_size=10
-        )
-
-    fig.add_trace(go.Scatter(
-        x=sp_time, y=sp_temp,
-        mode='lines+markers',
-        name='Setpoint',
-        line=dict(color='#1f77b4', width=2)
-    ))
-
-    for ann in annotations:
-        fig.add_annotation(
-            x=ann["x"],
-            y=ann["y"],
-            text=ann["text"],
-            showarrow=True,
-            arrowhead=2,
-            arrowsize=1,
-            arrowwidth=1,
-            ax=0,
-            ay=-35,
-            font=dict(size=10)
-        )
-
-    fig.update_layout(
-        xaxis_title="Time (h)",
-        yaxis_title="Temperature (°C)",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=40, r=40, t=50, b=40),
-        height=550
-    )
-
-    return fig
 
 
 # ----------------------------------------------------------------------

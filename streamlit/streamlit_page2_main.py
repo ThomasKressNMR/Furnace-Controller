@@ -14,6 +14,16 @@ from pathlib import Path
 import streamlit as st
 from serial.tools import list_ports
 
+# Insert imports from shared module
+from profile_utils import (
+    load_app_config,
+    update_config_key,
+    calculate_total_time_min,
+    validate_profile,
+    generate_profiles,
+    plot_profile_plotly,
+)
+
 # =============================================================================
 # Configuration & Global Persistence
 # =============================================================================
@@ -114,68 +124,6 @@ class ServiceManager:
 @st.cache_resource
 def get_manager() -> ServiceManager:
     return ServiceManager()
-
-
-def load_app_config() -> dict:
-    config = {
-        "default_folder_path": ".",
-        "last_file": "profile.json",
-        "last_port": "",
-        "esp32": {"measurement": "TS1-1200", "log_interval": 1.0},
-        "eurotherm": {
-            "ip": "192.168.111.222",
-            "port": 502,
-            "poll_interval": 1.0,
-        },
-        "limits": {
-            "max_temp": 1200.0,
-            "min_rate": -6.5,
-            "max_rate": 6.7,
-            "measurement": "TS1-1200",
-        },
-    }
-
-    if CONFIG_FILE_PATH.exists():
-        try:
-            with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                config.update(data)
-        except Exception:
-            pass
-
-    return config
-
-
-def update_config_key(**kwargs):
-    config = load_app_config()
-    config.update(kwargs)
-    try:
-        with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-    except Exception as exc:
-        st.error(f"Failed to update config.json: {exc}")
-
-
-def calculate_total_time_min(profile: dict) -> float:
-    """Fallback duration calculation if JSON doesn't contain total_experiment_time_min."""
-    sp = profile.get("start_temperature", 25.0)
-    t_min = 0.0
-
-    for seg in profile.get("segments", []):
-        typ = seg.get("type")
-        if typ == "rate-limited":
-            target = seg.get("target", sp)
-            rate = seg.get("rate", 0.0)
-            if rate != 0:
-                t_min += abs(target - sp) / abs(rate)
-            sp = target
-        elif typ == "time-limited":
-            t_min += seg.get("time", 0.0)
-            sp = seg.get("target", sp)
-        elif typ == "hold":
-            t_min += seg.get("time", 0.0)
-
-    return round(t_min, 2)
 
 
 def get_profile_total_time(profile_dir: str, profile_name: str) -> float:
@@ -477,13 +425,11 @@ for col, (service_id, service) in zip(service_cols, SERVICES.items()):
 # =============================================================================
 # Live Dashboard (Metrics & Logs auto-refreshing)
 # =============================================================================
-
 @st.fragment(run_every=1.0)
 def render_dashboard():
     mgr.process_queue()
     metrics = mgr.extract_metrics()
 
-    # Load total experiment time from current JSON profile
     total_time_min = get_profile_total_time(
         st.session_state.profile_dir,
         st.session_state.selected_profile,
@@ -508,13 +454,12 @@ def render_dashboard():
         pct_str = "0.0%"
         progress_val = 0.0
 
-    # Live Metrics Bar (6 Columns)
     m1, m2, m3 = st.columns(3)
     m1.metric("Current Temp", metrics["temperature"])
     m2.metric("Setpoint", metrics["setpoint"])
     m3.metric("Sample Temp", metrics["sample_temp"])
-    m4, m5, m6 = st.columns(3)
 
+    m4, m5, m6 = st.columns(3)
     m4.metric("Elapsed Time", elapsed_str)
     m5.metric("Remaining Time", remaining_str)
     m6.metric("Progress", pct_str)
@@ -522,17 +467,33 @@ def render_dashboard():
     if profile_running or total_time_min > 0:
         st.progress(progress_val)
 
+    # Render interactive profile graph for selected JSON
+    st.markdown("### Profile Target Plot")
+    selected_path = Path(st.session_state.profile_dir) / st.session_state.selected_profile
+    if selected_path.exists() and selected_path.is_file():
+        try:
+            with open(selected_path, "r", encoding="utf-8") as f:
+                selected_profile_data = json.load(f)
+
+            warnings = validate_profile(selected_profile_data)
+            for warn in warnings:
+                st.warning(warn)
+
+            sp_time, sp_temp, annotations, segment_info = generate_profiles(selected_profile_data)
+            fig = plot_profile_plotly(sp_time, sp_temp, annotations, segment_info)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as err:
+            st.error(f"Could not load or plot selected profile: {err}")
+    else:
+        st.info("No profile loaded to display plot.")
+
     st.markdown("### Output Logs")
     tabs = st.tabs([service["label"] for service in SERVICES.values()])
 
     for tab, (service_id, service) in zip(tabs, SERVICES.items()):
         with tab:
             logs_list = list(mgr.logs[service_id])
-            if logs_list:
-                log_text = "\n".join(reversed(logs_list))
-            else:
-                log_text = "No log activity."
-
+            log_text = "\n".join(reversed(logs_list)) if logs_list else "No log activity."
             st.code(log_text, language="text", height=450)
 
 st.divider()
