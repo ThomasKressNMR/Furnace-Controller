@@ -404,7 +404,7 @@ for col, (service_id, service) in zip(service_cols, SERVICES.items()):
                     disabled=running,
                     on_click=start_process,
                     args=(service_id,),
-                    use_container_width=True,
+                    width='content',
                 )
             with b_col2:
                 st.button(
@@ -413,7 +413,7 @@ for col, (service_id, service) in zip(service_cols, SERVICES.items()):
                     disabled=not running,
                     on_click=stop_process,
                     args=(service_id,),
-                    use_container_width=True,
+                    width='content',
                 )
 
             status_text = "🟢 Running" if running else "🔴 Stopped"
@@ -481,7 +481,7 @@ def render_dashboard():
 
             sp_time, sp_temp, annotations, segment_info = generate_profiles(selected_profile_data)
             fig = plot_profile_plotly(sp_time, sp_temp, annotations, segment_info)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='content')
         except Exception as err:
             st.error(f"Could not load or plot selected profile: {err}")
     else:
