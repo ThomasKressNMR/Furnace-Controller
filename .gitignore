@@ -1,0 +1,10 @@
+# Environment variables
+.env
+!.env.example
+
+# IDE & Virtual Environments
+/.idea/modules.xml
+/.idea/
+/.idea/profiles_settings.xml
+.venv/
+*.xml
