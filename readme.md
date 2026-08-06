@@ -9,7 +9,7 @@
 - Install portainer (https://docs.portainer.io/start/install-ce/server/docker/linux). This will be helpful to manage docker scripts
 - Install grafana+influx db:
 ```
-cd ./Temperature_logging/docker
+cd ./Furnace-Controller/docker
 docker compose up -d
 ```
 
@@ -50,14 +50,5 @@ from(bucket: "Furnace")
 - Create a conda environment: `conda create -n furnace python=3.14` (first time only)
 - Activate environment: `conda activate furnace`
 - Install python packages, whereever `requirements.txt` is located: `pip install -r requirements.txt`
-- Open streamlit app: `cd streamlit`, then ``streamlit run streamlit_app.py`
-- For subsequent openings on windows, this .bat file should work:
-
-```
-@echo off
-REM Initialize and activate the conda environment, then change directory and run Streamlit
-call C:\ProgramData\miniconda3\Scripts\activate.bat furnace
-cd /d C:\Users\Forse\Documents\Temperature_logging\streamlit
-streamlit run streamlit_app.py
-pause
-```
+- Open streamlit app: `cd streamlit`, then ``streamlit run main.py`
+- For subsequent openings on Windows, this .bat file should work:
