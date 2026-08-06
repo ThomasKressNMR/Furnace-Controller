@@ -1,3 +1,7 @@
+```
+git clone git@github.com:ThomasKressNMR/Furnace-Controller.git
+```
+
 # Arduino/ESP32
 - Install the arduino IDE app
 - Install ESP32 drivers (https://www.silabs.com/software-and-tools/usb-to-uart-bridge-vcp-drivers?tab=downloads)
