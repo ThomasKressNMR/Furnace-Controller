@@ -11,7 +11,7 @@ mcp_err_t sensor_basic_config() {
   mcp_err_t ret = NO_ERROR;
   CHECK_RESULT(ret, sensor.set_filt_coefficients(FILT_MID));
   CHECK_RESULT(ret, sensor.set_cold_junc_resolution(COLD_JUNC_RESOLUTION_0_25));
-  CHECK_RESULT(ret, sensor.set_ADC_meas_resolution(ADC_14BIT_RESOLUTION));
+  CHECK_RESULT(ret, sensor.set_ADC_meas_resolution(ADC_18BIT_RESOLUTION));
   CHECK_RESULT(ret, sensor.set_burst_mode_samp(BURST_32_SAMPLE));
   CHECK_RESULT(ret, sensor.set_sensor_mode(NORMAL_OPERATION));
   return ret;
@@ -41,6 +41,7 @@ void setup() {
   SERIAL.println("serial start!!");
   if (sensor.init(THER_TYPE_N)) {
     SERIAL.println("sensor init failed!!");
+
   }
   sensor_basic_config();
 }
