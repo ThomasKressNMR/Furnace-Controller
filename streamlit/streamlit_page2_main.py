@@ -33,7 +33,7 @@ MAX_LOG_LINES = 1000
 SERVICES = {
     "profile": {
         "label": "Run Profile",
-        "script": "run_profile.py",
+        "script": "run_furnace_profile.py",
         "requires_profile": True,
     },
     "influx": {
