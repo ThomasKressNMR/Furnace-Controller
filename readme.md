@@ -10,7 +10,8 @@ A Streamlit web application to control a **Carbolite TS1-1200** tube furnace equ
 * **Dashboards:** Log time-series data to InfluxDB v2 for real-time Grafana visualization.
 
 ---
-
+![recipe.png](pictures/recipe.png)
+![controller.png](pictures/controller.png)
 ## Getting Started
 
 ### 1. Clone the Repository
@@ -86,7 +87,7 @@ from(bucket: "Furnace")
 
 ## Network Configuration
 
-Connect the Carbolite furnace directly or via network switch and set your static IPv4 configuration:
+Connect the Carbolite furnace directly to computer set your (or that of a ethernet to usb adapter) static IPv4 configuration:
 
 * **IP Address:** `192.168.11.20`
 * **Subnet Mask:** `255.255.0.0`
@@ -122,8 +123,6 @@ streamlit run main.py
 * **Thermocouple:** RS PRO Type N Mineral Insulated Thermocouple (500mm length, 3mm diameter, max +1300°C)
 
 ### Wiring / Soldering
-
-
 ![esp32.jpg](pictures/esp32.jpg)
 
 Cut the Grove cable in half and solder directly to the ESP32 header pins:
@@ -154,5 +153,9 @@ Cut the Grove cable in half and solder directly to the ESP32 header pins:
 conda activate furnace
 cd streamlit
 streamlit run main.py
-
 ```
+or more easily:
+```
+sh furnace_controller.sh
+```
+where `furnace_controller.sh` has been moved to `~/` and part in bracket has been modified to reflect folder structure
