@@ -1,6 +1,6 @@
 # Furnace Controller
 
-A Streamlit web application to control a **Carbolite TS1-1200** tube furnace equipped with a Eurotherm controller over Ethernet.
+A Streamlit web application to control a **Carbolite TS1-1200** tube furnace equipped with a Eurotherm 3016 controller over Ethernet.
 
 ## Features
 
@@ -123,22 +123,26 @@ streamlit run main.py
 
 ### Wiring / Soldering
 
+
+![esp32.jpg](pictures/esp32.jpg)
+
 Cut the Grove cable in half and solder directly to the ESP32 header pins:
 
-| Grove Wire Color | ESP32 Pin | Function |
-| --- | --- | --- |
-| **Black** | `GND` | Ground |
-| **Red** | `3V3` | Power (+3.3V) |
-| **White** | `SDA` | I2C Data |
-| **Yellow** | `SCL` | I2C Clock |
+| Grove Wire Color | ESP32 Pin | Function       |
+| --- |-----------|----------------|
+| **Black** | `GND`     | Ground         |
+| **Red** | `3V3`     | Power (+3.3V)  |
+| **White** | `8`       | SDA: I2C Data  |
+| **Yellow** | `9`       | SCL: I2C Clock |
 
 ### Firmware Flashing
 
 1. Install [Arduino IDE](https://www.arduino.cc/en/software) (v2.3+).
 2. Install the **esp32** board package by *Espressif Systems* via **Boards Manager**.
 3. Install the [CP210x USB to UART Drivers](https://www.silabs.com/software-and-tools/usb-to-uart-bridge-vcp-drivers) if your computer doesn't recognize the board.
-4. Open `arduino_temperature_logging/arduino_temperature_logging.ino` and upload it to your ESP32.
-5. In the Streamlit app sidebar, select the matching serial port (labeled `UART` or `USB`).
+4. Tools > USB CDC on boot > Enabled
+5. Open `arduino_temperature_logging/arduino_temperature_logging.ino` and upload it to your ESP32.
+6. In the Streamlit app sidebar, select the matching serial port (labeled `UART` or `USB`).
 
 ---
 
