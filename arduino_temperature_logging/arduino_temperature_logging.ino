@@ -39,7 +39,7 @@ void setup() {
   SERIAL.begin(115200);
   delay(1);
   SERIAL.println("serial start!!");
-  if (sensor.init(THER_TYPE_K)) {
+  if (sensor.init(THER_TYPE_N)) {
     SERIAL.println("sensor init failed!!");
   }
   sensor_basic_config();
