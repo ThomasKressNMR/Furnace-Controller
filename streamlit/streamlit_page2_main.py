@@ -481,7 +481,7 @@ def render_dashboard():
 
             sp_time, sp_temp, annotations, segment_info = generate_profiles(selected_profile_data)
             fig = plot_profile_plotly(sp_time, sp_temp, annotations, segment_info)
-            st.plotly_chart(fig, width='content')
+            st.plotly_chart(fig, width='stretch')
         except Exception as err:
             st.error(f"Could not load or plot selected profile: {err}")
     else:
