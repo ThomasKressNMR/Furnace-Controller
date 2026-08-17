@@ -18,7 +18,7 @@ from serial.tools import list_ports
 from profile_utils import (
     load_app_config,
     update_config_key,
-    calculate_total_time_min,
+    calculate_profile_times,
     validate_profile,
     generate_profiles,
     plot_profile_plotly,
@@ -94,7 +94,6 @@ class ServiceManager:
 
         for service_id in ["esp32", "profile", "influx"]:
             for line in reversed(self.logs[service_id]):
-                # Early exit if all metrics are populated
                 if all(v != "—" for v in metrics.values()):
                     break
 
@@ -126,22 +125,29 @@ def get_manager() -> ServiceManager:
     return ServiceManager()
 
 
-def get_profile_total_time(profile_dir: str, profile_name: str) -> float:
-    """Extract total duration in minutes directly from the profile JSON file."""
+def get_profile_durations(profile_dir: str, profile_name: str) -> tuple[float, float, float]:
+    """
+    Extract (recipe_time_min, cooling_time_min, total_time_min) from profile.
+
+    Returns:
+        tuple[float, float, float]: (recipe_min, cooling_min, total_min)
+    """
     if not profile_dir or not profile_name:
-        return 0.0
+        return 0.0, 0.0, 0.0
 
     profile_path = Path(profile_dir) / profile_name
     if profile_path.exists() and profile_path.is_file():
         try:
             with open(profile_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if "total_experiment_time_min" in data:
-                    return float(data["total_experiment_time_min"])
-                return calculate_total_time_min(data)
+
+            cfg = load_app_config()
+            recipe_min, total_min = calculate_profile_times(data, cfg)
+            cooling_min = max(0.0, total_min - recipe_min)
+            return recipe_min, cooling_min, total_min
         except Exception:
             pass
-    return 0.0
+    return 0.0, 0.0, 0.0
 
 
 def format_time_min(minutes: float) -> str:
@@ -312,6 +318,7 @@ def stop_process(service_id: str) -> None:
 # =============================================================================
 
 st.title("Furnace Control Panel")
+
 # Sidebar Settings
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -325,7 +332,6 @@ with st.sidebar:
         )
     )
     st.session_state.profile_dir = str(profile_dir)
-
 
     # Profile File
     if profile_dir.exists():
@@ -353,8 +359,6 @@ with st.sidebar:
             st.info("No JSON profiles found.")
             st.session_state.selected_profile = ""
 
-
-
         # Serial Port
         ports = get_serial_ports()
         if ports:
@@ -377,7 +381,6 @@ with st.sidebar:
         else:
             st.warning("No serial ports detected.")
             st.session_state.selected_port = ""
-
 
     else:
         st.error(f"Directory not found: {profile_dir}")
@@ -422,6 +425,7 @@ for col, (service_id, service) in zip(service_cols, SERVICES.items()):
                 status_text += f" (PID {proc.pid})"
             st.caption(status_text)
 
+
 # =============================================================================
 # Live Dashboard (Metrics & Logs auto-refreshing)
 # =============================================================================
@@ -430,7 +434,7 @@ def render_dashboard():
     mgr.process_queue()
     metrics = mgr.extract_metrics()
 
-    total_time_min = get_profile_total_time(
+    recipe_time_min, cooling_time_min, est_total_time_min = get_profile_durations(
         st.session_state.profile_dir,
         st.session_state.selected_profile,
     )
@@ -441,30 +445,49 @@ def render_dashboard():
     if profile_running and start_time:
         elapsed_sec = (datetime.now() - start_time).total_seconds()
         elapsed_min = elapsed_sec / 60.0
-        remaining_min = max(0.0, total_time_min - elapsed_min)
-        pct = min(100.0, (elapsed_min / total_time_min * 100.0)) if total_time_min > 0 else 0.0
+
+        # Recipe progress vs cooling progress
+        recipe_elapsed_min = min(elapsed_min, recipe_time_min)
+        recipe_remaining_min = max(0.0, recipe_time_min - elapsed_min)
+
+        cooling_elapsed_min = max(0.0, elapsed_min - recipe_time_min)
+        cooling_remaining_min = max(0.0, cooling_time_min - cooling_elapsed_min)
+
+        total_remaining_min = max(0.0, est_total_time_min - elapsed_min)
+        pct = min(100.0, (elapsed_min / est_total_time_min * 100.0)) if est_total_time_min > 0 else 0.0
 
         elapsed_str = format_time_min(elapsed_min)
-        remaining_str = format_time_min(remaining_min)
+        recipe_remaining_str = format_time_min(recipe_remaining_min)
+        cooling_remaining_str = format_time_min(cooling_remaining_min)
         pct_str = f"{pct:.1f}%"
         progress_val = min(1.0, max(0.0, pct / 100.0))
     else:
         elapsed_str = "0m 0s"
-        remaining_str = format_time_min(total_time_min) if total_time_min > 0 else "—"
+        recipe_remaining_str = format_time_min(recipe_time_min) if recipe_time_min > 0 else "—"
+        cooling_remaining_str = format_time_min(cooling_time_min) if cooling_time_min > 0 else "—"
         pct_str = "0.0%"
         progress_val = 0.0
 
+    # Temperature Row
     m1, m2, m3 = st.columns(3)
     m1.metric("Current Temp", metrics["temperature"])
-    m2.metric("Setpoint", metrics["setpoint"])
+    m2.metric("Setpoint Target", metrics["setpoint"])
     m3.metric("Sample Temp", metrics["sample_temp"])
 
+    # Duration Totals Row
     m4, m5, m6 = st.columns(3)
-    m4.metric("Elapsed Time", elapsed_str)
-    m5.metric("Remaining Time", remaining_str)
-    m6.metric("Progress", pct_str)
+    m4.metric("Recipe Duration", format_time_min(recipe_time_min) if recipe_time_min > 0 else "—")
+    m5.metric("Est. Cool Down Time", format_time_min(cooling_time_min) if cooling_time_min > 0 else "—")
+    m6.metric("Total Est. Duration", format_time_min(est_total_time_min) if est_total_time_min > 0 else "—")
 
-    if profile_running or total_time_min > 0:
+    # Dynamic Countdown Counters Row
+    m7, m8, m9 = st.columns(3)
+    m7.metric("Elapsed Total Time", elapsed_str)
+    m8.metric("Recipe Rem. Time", recipe_remaining_str)
+    m9.metric("Cooling Rem. Time", cooling_remaining_str)
+
+    if profile_running or est_total_time_min > 0:
+        st.caption(f"Overall Completion: {pct_str}")
         st.progress(progress_val)
 
     # Render interactive profile graph for selected JSON
@@ -479,9 +502,9 @@ def render_dashboard():
             for warn in warnings:
                 st.warning(warn)
 
-            sp_time, sp_temp, annotations, segment_info = generate_profiles(selected_profile_data)
-            fig = plot_profile_plotly(sp_time, sp_temp, annotations, segment_info)
-            st.plotly_chart(fig, width='content')
+            sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info = generate_profiles(selected_profile_data)
+            fig = plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info)
+            st.plotly_chart(fig, width='stretch')
         except Exception as err:
             st.error(f"Could not load or plot selected profile: {err}")
     else:
@@ -495,6 +518,7 @@ def render_dashboard():
             logs_list = list(mgr.logs[service_id])
             log_text = "\n".join(reversed(logs_list)) if logs_list else "No log activity."
             st.code(log_text, language="text", height=450)
+
 
 st.divider()
 

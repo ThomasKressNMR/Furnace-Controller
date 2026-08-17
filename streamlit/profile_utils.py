@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import plotly.graph_objects as go
 import streamlit as st
+import math
 
 PARAM_FILE_PATH = Path("param.json")
 CONFIG_FILE_PATH = Path("config.json")
@@ -45,27 +46,80 @@ def update_config_key(**kwargs):
         st.error(f"Failed to update config.json: {e}")
 
 
-def calculate_total_time_min(profile: dict) -> float:
-    """Calculate the total duration of the profile in minutes."""
+
+
+
+def calculate_profile_times(profile: dict, config: dict) -> tuple[float, float]:
+    """
+    Calculate recipe duration and actual estimated experiment duration in minutes.
+
+    Returns:
+        tuple[float, float]: (recipe_time_min, estimated_total_time_min)
+    """
     sp = profile.get("start_temperature", 25.0)
-    t_min = 0.0
+    t_recipe = 0.0
+    t_actual = 0.0
+
+    limits = config.get("limits", {})
+    t_ambient = limits.get("t_ambient", 30.0)
+
+    # Target temperature to end cooling estimate (e.g. 100.0 °C)
+    cool_down_stop_temp = limits.get("cool_down_stop_temp", 100.0)
+
+    # Resolve half-life in minutes from decay_rate_h1 (h^-1), half_life_h (hours), or half_life_min
+    if "decay_rate_h1" in limits and limits["decay_rate_h1"] > 0:
+        half_life_min = (math.log(2) / limits["decay_rate_h1"]) * 60.0
+    elif "half_life_h" in limits:
+        half_life_min = limits["half_life_h"] * 60.0
+    else:
+        half_life_min = limits.get("half_life_min", 127.66)
+
+    MIN_DELTA = 0.5  # Safety margin above ambient to prevent log(0)
 
     for seg in profile.get("segments", []):
         typ = seg.get("type")
+
         if typ == "rate-limited":
             target = seg.get("target", sp)
             rate = seg.get("rate", 0.0)
-            if rate != 0:
-                t_min += abs(target - sp) / abs(rate)
+
+            t_linear = abs(target - sp) / abs(rate) if rate != 0 else 0.0
+            t_recipe += t_linear
+
+            if target < sp:  # Cooling segment
+                # Target for natural cooling calculation capped at cool_down_stop_temp
+                effective_target = max(target, cool_down_stop_temp)
+
+                if sp <= t_ambient or sp <= effective_target:
+                    t_actual += t_linear
+                else:
+                    sp_clamped = max(sp, t_ambient + MIN_DELTA)
+                    target_clamped = max(effective_target, t_ambient + MIN_DELTA)
+
+                    if sp_clamped > target_clamped:
+                        temp_ratio = (target_clamped - t_ambient) / (sp_clamped - t_ambient)
+                        t_natural = -half_life_min * math.log2(temp_ratio)
+                    else:
+                        t_natural = 0.0
+
+                    t_actual += max(t_linear, t_natural)
+            else:  # Heating segment
+                t_actual += t_linear
+
             sp = target
+
         elif typ == "time-limited":
-            t_min += seg.get("time", 0.0)
+            t_seg = seg.get("time", 0.0)
+            t_recipe += t_seg
+            t_actual += t_seg
             sp = seg.get("target", sp)
+
         elif typ == "hold":
-            t_min += seg.get("time", 0.0)
+            t_seg = seg.get("time", 0.0)
+            t_recipe += t_seg
+            t_actual += t_seg
 
-    return round(t_min, 2)
-
+    return round(t_recipe, 2), round(t_actual, 2)
 
 def validate_profile(profile: dict):
     """Validate temperature thresholds and rates against hardware limits."""
@@ -131,14 +185,59 @@ def validate_profile(profile: dict):
 
     return warnings
 
+def generate_profiles(profile: dict, config: dict = None):
+    """Generate setpoint profile coordinates, simulated physical temperature curve, annotations, and segment timelines."""
+    if config is None:
+        config = load_app_config()
 
-def generate_profiles(profile: dict):
-    """Generate profile coordinates, annotations, and segment timelines."""
+    limits = config.get("limits", {})
+    t_ambient = limits.get("t_ambient", 30.0)
+
+    # Determine decay rate k (in min^-1)
+    if "decay_rate_h1" in limits and limits["decay_rate_h1"] > 0:
+        k_min = limits["decay_rate_h1"] / 60.0
+    elif "half_life_h" in limits:
+        k_min = math.log(2) / (limits["half_life_h"] * 60.0)
+    else:
+        half_life_min = limits.get("half_life_min", 127.66)
+        k_min = math.log(2) / half_life_min
+
+    max_heating_rate = limits.get("max_rate", 6.7)  # °C/min
+
     start_temp = profile.get("start_temperature", 25.0)
     sp_time, sp_temp = [0.0], [start_temp]
     annotations, segment_info = [], []
+
+    # Simulation lists (time in minutes)
+    sim_time_min = [0.0]
+    sim_temp = [start_temp]
+
     t_min = 0.0
     sp = start_temp
+    curr_sim_temp = start_temp
+    dt = 0.5  # simulation step in minutes (~30s)
+
+    def simulate_step(target_sp: float, max_rate: float, duration_min: float):
+        nonlocal t_min, curr_sim_temp
+        elapsed = 0.0
+        while elapsed < duration_min:
+            step = min(dt, duration_min - elapsed)
+            elapsed += step
+            t_min += step
+
+            if target_sp > curr_sim_temp:
+                # Heating phase: follows commanded profile rate capped by hardware max_rate
+                rate = min(max_rate, (target_sp - curr_sim_temp) / step) if step > 0 else max_rate
+                curr_sim_temp += rate * step
+            else:
+                # Cooling phase: natural Newton cooling vs commanded rate
+                natural_cooling_rate = k_min * (curr_sim_temp - t_ambient)
+                curr_sim_temp -= natural_cooling_rate * step
+                if curr_sim_temp < target_sp:
+                    curr_sim_temp = target_sp
+
+            sim_time_min.append(t_min)
+            sim_temp.append(curr_sim_temp)
 
     for segment in profile.get("segments", []):
         segment_start_h = t_min / 60.0
@@ -150,10 +249,12 @@ def generate_profiles(profile: dict):
             rate = segment["rate"]
             duration_min = abs(target - sp) / abs(rate) if rate != 0 else 0.0
             start_sp = sp
-            t_min += duration_min
+
+            simulate_step(target, abs(rate), duration_min)
+
+            sp = target
             t_h = t_min / 60.0
             duration_h = duration_min / 60.0
-            sp = target
 
             sp_time.append(t_h)
             sp_temp.append(sp)
@@ -168,10 +269,12 @@ def generate_profiles(profile: dict):
             duration_min = segment.get("time", 0.0)
             calculated_rate_min = (target - sp) / duration_min if duration_min > 0 else 0.0
             start_sp = sp
-            t_min += duration_min
+
+            simulate_step(target, abs(calculated_rate_min), duration_min)
+
+            sp = target
             t_h = t_min / 60.0
             duration_h = duration_min / 60.0
-            sp = target
 
             sp_time.append(t_h)
             sp_temp.append(sp)
@@ -184,7 +287,9 @@ def generate_profiles(profile: dict):
         elif typ == "hold":
             hold_time_min = segment.get("time", 0.0)
             start_sp = sp
-            t_min += hold_time_min
+
+            simulate_step(sp, max_heating_rate, hold_time_min)
+
             t_h = t_min / 60.0
             hold_time_h = hold_time_min / 60.0
 
@@ -199,11 +304,13 @@ def generate_profiles(profile: dict):
 
         segment_info.append({"start": segment_start_h, "end": t_min / 60.0, "title": title})
 
-    return sp_time, sp_temp, annotations, segment_info
+    sim_time_h = [t / 60.0 for t in sim_time_min]
+
+    return sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info
 
 
-def plot_profile_plotly(sp_time, sp_temp, annotations, segment_info):
-    """Build and return an interactive Plotly figure."""
+def plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info):
+    """Build and return an interactive Plotly figure comparing Setpoint and Simulated Temp."""
     fig = go.Figure()
     colors = [
         "rgba(31, 119, 180, 0.12)", "rgba(255, 127, 14, 0.12)",
@@ -221,12 +328,23 @@ def plot_profile_plotly(sp_time, sp_temp, annotations, segment_info):
             annotation_font_size=10
         )
 
+    # Simulated Physical Temperature: Dashed line
+    fig.add_trace(go.Scatter(
+        x=sim_time_h, y=sim_temp,
+        mode='lines',
+        name='Simulated Temp',
+        line=dict(color='#d62728', width=2.5, dash='dash')
+    ))
+
+    # Commanded Setpoint Target: Plain (Solid line)
     fig.add_trace(go.Scatter(
         x=sp_time, y=sp_temp,
         mode='lines+markers',
-        name='Setpoint',
+        name='Setpoint Target',
         line=dict(color='#1f77b4', width=2)
     ))
+
+
 
     for ann in annotations:
         fig.add_annotation(

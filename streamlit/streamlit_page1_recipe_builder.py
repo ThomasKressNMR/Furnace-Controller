@@ -23,7 +23,7 @@ from profile_utils import (
     CONFIG_FILE_PATH,
     PARAM_FILE_PATH,
     SEGMENT_TYPES,
-    calculate_total_time_min,
+    calculate_profile_times,
     generate_profiles,
     load_app_config,
     plot_profile_plotly,
@@ -283,9 +283,17 @@ with st.sidebar:
     filename = st.text_input("Save File Name", key="filename_input")
     if not filename.endswith(".json"):
         filename += ".json"
+    # Compute and append both duration metrics directly into the profile dictionary
+    recipe_time, actual_time = calculate_profile_times(profile, config)
+    profile["recipe_time_min"] = recipe_time
+    profile["estimated_total_time_min"] = actual_time
 
-    # Compute total experiment duration before dumping to JSON
-    profile["total_experiment_time_min"] = calculate_total_time_min(profile)
+    # Remove old key if present from earlier versions
+    profile.pop("total_experiment_time_min", None)
+
+    # Optional: Display summary metrics in UI sidebar
+    st.caption(f"⏱️ Recipe Time: {recipe_time:.1f} min ({recipe_time / 60:.2f} h)")
+    st.caption(f"🔥 Est. Total Time: {actual_time:.1f} min ({actual_time / 60:.2f} h)")
 
     profile_json = json.dumps(profile, indent=2)
 
