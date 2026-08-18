@@ -87,7 +87,6 @@ def calculate_profile_times(profile: dict, config: dict) -> tuple[float, float]:
             t_recipe += t_linear
 
             if target < sp:  # Cooling segment
-                # Target for natural cooling calculation capped at cool_down_stop_temp
                 effective_target = max(target, cool_down_stop_temp)
 
                 if sp <= t_ambient or sp <= effective_target:
@@ -102,6 +101,8 @@ def calculate_profile_times(profile: dict, config: dict) -> tuple[float, float]:
                     else:
                         t_natural = 0.0
 
+                    # If t_natural < t_linear, furnace active heating holds the programmed rate.
+                    # If t_natural > t_linear, natural loss is too slow so experiment takes t_natural.
                     t_actual += max(t_linear, t_natural)
             else:  # Heating segment
                 t_actual += t_linear
@@ -185,6 +186,7 @@ def validate_profile(profile: dict):
 
     return warnings
 
+
 def generate_profiles(profile: dict, config: dict = None):
     """Generate setpoint profile coordinates, simulated physical temperature curve, annotations, and segment timelines."""
     if config is None:
@@ -208,7 +210,6 @@ def generate_profiles(profile: dict, config: dict = None):
     sp_time, sp_temp = [0.0], [start_temp]
     annotations, segment_info = [], []
 
-    # Simulation lists (time in minutes)
     sim_time_min = [0.0]
     sim_temp = [start_temp]
 
@@ -217,24 +218,32 @@ def generate_profiles(profile: dict, config: dict = None):
     curr_sim_temp = start_temp
     dt = 0.5  # simulation step in minutes (~30s)
 
-    def simulate_step(target_sp: float, max_rate: float, duration_min: float):
+    def simulate_step(start_sp: float, target_sp: float, duration_min: float):
         nonlocal t_min, curr_sim_temp
         elapsed = 0.0
+
+        # Calculate slope of commanded setpoint ramp (°C/min)
+        sp_slope = (target_sp - start_sp) / duration_min if duration_min > 0 else 0.0
+
         while elapsed < duration_min:
             step = min(dt, duration_min - elapsed)
             elapsed += step
             t_min += step
 
-            if target_sp > curr_sim_temp:
-                # Heating phase: follows commanded profile rate capped by hardware max_rate
-                rate = min(max_rate, (target_sp - curr_sim_temp) / step) if step > 0 else max_rate
-                curr_sim_temp += rate * step
+            # Dynamic setpoint at this exact moment in time
+            inst_sp = start_sp + sp_slope * elapsed
+
+            if curr_sim_temp < inst_sp:
+                # Temperature is below setpoint -> Heating ON
+                # Heat up toward dynamic setpoint, capped by hardware max_heating_rate
+                needed_rate = (inst_sp - curr_sim_temp) / step if step > 0 else max_heating_rate
+                applied_rate = min(max_heating_rate, needed_rate)
+                curr_sim_temp += applied_rate * step
             else:
-                # Cooling phase: natural Newton cooling vs commanded rate
+                # Temperature is at or above setpoint -> Heating OFF
+                # Cool down via natural ambient thermal decay
                 natural_cooling_rate = k_min * (curr_sim_temp - t_ambient)
                 curr_sim_temp -= natural_cooling_rate * step
-                if curr_sim_temp < target_sp:
-                    curr_sim_temp = target_sp
 
             sim_time_min.append(t_min)
             sim_temp.append(curr_sim_temp)
@@ -250,7 +259,7 @@ def generate_profiles(profile: dict, config: dict = None):
             duration_min = abs(target - sp) / abs(rate) if rate != 0 else 0.0
             start_sp = sp
 
-            simulate_step(target, abs(rate), duration_min)
+            simulate_step(start_sp, target, duration_min)
 
             sp = target
             t_h = t_min / 60.0
@@ -267,10 +276,9 @@ def generate_profiles(profile: dict, config: dict = None):
         elif typ == "time-limited":
             target = segment["target"]
             duration_min = segment.get("time", 0.0)
-            calculated_rate_min = (target - sp) / duration_min if duration_min > 0 else 0.0
             start_sp = sp
 
-            simulate_step(target, abs(calculated_rate_min), duration_min)
+            simulate_step(start_sp, target, duration_min)
 
             sp = target
             t_h = t_min / 60.0
@@ -278,6 +286,7 @@ def generate_profiles(profile: dict, config: dict = None):
 
             sp_time.append(t_h)
             sp_temp.append(sp)
+            calculated_rate_min = (target - start_sp) / duration_min if duration_min > 0 else 0.0
             annotations.append({
                 "x": (segment_start_h + t_h) / 2.0,
                 "y": (start_sp + sp) / 2.0,
@@ -288,7 +297,7 @@ def generate_profiles(profile: dict, config: dict = None):
             hold_time_min = segment.get("time", 0.0)
             start_sp = sp
 
-            simulate_step(sp, max_heating_rate, hold_time_min)
+            simulate_step(start_sp, start_sp, hold_time_min)
 
             t_h = t_min / 60.0
             hold_time_h = hold_time_min / 60.0
@@ -307,7 +316,6 @@ def generate_profiles(profile: dict, config: dict = None):
     sim_time_h = [t / 60.0 for t in sim_time_min]
 
     return sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info
-
 
 def plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info):
     """Build and return an interactive Plotly figure comparing Setpoint and Simulated Temp."""

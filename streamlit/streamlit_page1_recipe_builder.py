@@ -155,6 +155,11 @@ def on_folder_path_change():
 # ----------------------------------------------------------------------
 # Sidebar Controls
 # ----------------------------------------------------------------------
+import copy
+import json
+import uuid
+from pathlib import Path
+import streamlit as st
 
 with st.sidebar:
     st.header("File Operations")
@@ -206,13 +211,23 @@ with st.sidebar:
 
     segments = profile.setdefault("segments", [])
 
+    # Ensure every segment has a permanent, unique identifier for widget keys
+    for seg in segments:
+        if "_id" not in seg:
+            seg["_id"] = str(uuid.uuid4())
+
     for i, seg in enumerate(segments):
+        seg_id = seg["_id"]
+
         with st.expander(f"{i + 1}. {seg.get('title', seg['type'])} ({seg['type']})", expanded=False):
-            seg["title"] = st.text_input("Title", value=seg.get("title", ""), key=f"title_{i}")
+            seg["title"] = st.text_input("Title", value=seg.get("title", ""), key=f"title_{seg_id}")
+
+            type_idx = SEGMENT_TYPES.index(seg["type"]) if seg["type"] in SEGMENT_TYPES else 0
             seg["type"] = st.selectbox(
-                "Type", SEGMENT_TYPES,
-                index=SEGMENT_TYPES.index(seg["type"]) if seg["type"] in SEGMENT_TYPES else 0,
-                key=f"type_{i}",
+                "Type",
+                SEGMENT_TYPES,
+                index=type_idx,
+                key=f"type_{seg_id}",
             )
 
             typ = seg["type"]
@@ -221,12 +236,12 @@ with st.sidebar:
                 seg["target"] = st.number_input(
                     "Target temp (°C)",
                     value=float(seg.get("target", profile["start_temperature"])),
-                    key=f"target_{i}",
+                    key=f"target_{seg_id}",
                 )
                 seg["rate"] = st.number_input(
                     "Rate (°C/min)",
                     value=float(seg.get("rate", 1.0)),
-                    key=f"rate_{i}",
+                    key=f"rate_{seg_id}",
                 )
                 seg.pop("time", None)
 
@@ -234,13 +249,13 @@ with st.sidebar:
                 seg["target"] = st.number_input(
                     "Target temp (°C)",
                     value=float(seg.get("target", profile["start_temperature"])),
-                    key=f"target_{i}",
+                    key=f"target_{seg_id}",
                 )
                 seg["time"] = st.number_input(
                     "Ramp time (min)",
                     value=float(seg.get("time", 10.0)),
                     min_value=0.01,
-                    key=f"time_{i}",
+                    key=f"time_{seg_id}",
                 )
                 seg.pop("rate", None)
 
@@ -249,30 +264,34 @@ with st.sidebar:
                     "Hold time (min)",
                     value=float(seg.get("time", 0.0)),
                     min_value=0.0,
-                    key=f"time_{i}",
+                    key=f"time_{seg_id}",
                 )
                 seg.pop("target", None)
                 seg.pop("rate", None)
 
-            # Reorganization buttons
+            # Reorganization buttons with stable UUID keys
             b_col1, b_col2 = st.columns(2)
-            if b_col1.button("Move Up", key=f"up_{i}", disabled=(i == 0), width='stretch'):
+            if b_col1.button("Move Up", key=f"up_{seg_id}", disabled=(i == 0), use_container_width=True):
                 segments[i - 1], segments[i] = segments[i], segments[i - 1]
                 st.rerun()
-            if b_col2.button("Move Down", key=f"down_{i}", disabled=(i == len(segments) - 1), width='stretch'):
+            if b_col2.button("Move Down", key=f"down_{seg_id}", disabled=(i == len(segments) - 1),
+                             use_container_width=True):
                 segments[i + 1], segments[i] = segments[i], segments[i + 1]
                 st.rerun()
 
             b_col3, b_col4 = st.columns(2)
-            if b_col3.button("Duplicate", key=f"dup_{i}", width='stretch'):
-                segments.insert(i + 1, copy.deepcopy(seg))
+            if b_col3.button("Duplicate", key=f"dup_{seg_id}", use_container_width=True):
+                dup_seg = copy.deepcopy(seg)
+                dup_seg["_id"] = str(uuid.uuid4())
+                segments.insert(i + 1, dup_seg)
                 st.rerun()
-            if b_col4.button("Delete", key=f"del_{i}", width='stretch'):
+            if b_col4.button("Delete", key=f"del_{seg_id}", use_container_width=True):
                 segments.pop(i)
                 st.rerun()
 
-    if st.button("Add Segment", width='stretch'):
+    if st.button("Add Segment", use_container_width=True):
         segments.append({
+            "_id": str(uuid.uuid4()),
             "title": "New segment",
             "type": "hold",
             "time": 0.0,
@@ -283,6 +302,7 @@ with st.sidebar:
     filename = st.text_input("Save File Name", key="filename_input")
     if not filename.endswith(".json"):
         filename += ".json"
+
     # Compute and append both duration metrics directly into the profile dictionary
     recipe_time, actual_time = calculate_profile_times(profile, config)
     profile["recipe_time_min"] = recipe_time
@@ -291,15 +311,20 @@ with st.sidebar:
     # Remove old key if present from earlier versions
     profile.pop("total_experiment_time_min", None)
 
-    # Optional: Display summary metrics in UI sidebar
+    # Clean internal IDs before serialization so JSON stays clean
+    clean_profile = copy.deepcopy(profile)
+    for seg in clean_profile.get("segments", []):
+        seg.pop("_id", None)
+
+    # Display summary metrics in UI sidebar
     st.caption(f"⏱️ Recipe Time: {recipe_time:.1f} min ({recipe_time / 60:.2f} h)")
     st.caption(f"🔥 Est. Total Time: {actual_time:.1f} min ({actual_time / 60:.2f} h)")
 
-    profile_json = json.dumps(profile, indent=2)
+    profile_json = json.dumps(clean_profile, indent=2)
 
     s_col1, s_col2 = st.columns(2)
     with s_col1:
-        if st.button("Save", width='stretch'):
+        if st.button("Save", use_container_width=True):
             if not target_dir.exists() or not target_dir.is_dir():
                 st.error("Cannot save: target directory is invalid.")
             else:
@@ -323,7 +348,7 @@ with st.sidebar:
             data=profile_json,
             file_name=filename,
             mime="application/json",
-            width='stretch'
+            use_container_width=True
         )
 
 # ----------------------------------------------------------------------

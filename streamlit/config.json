@@ -1,5 +1,5 @@
 {
-  "default_folder_path": "../recipes",
+  "default_folder_path": "",
   "last_file": "test.json",
   "last_port": "/dev/cu.usbmodem2101",
   "esp32": {
