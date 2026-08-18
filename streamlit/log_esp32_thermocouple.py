@@ -78,33 +78,51 @@ def parse_line(raw_line: str) -> dict | None:
     if not reading:
         return None
 
-    if "ID" not in reading or "temp" not in reading:
+    if (
+        "ID" not in reading
+        or "hot_temp" not in reading
+        or "cold_temp" not in reading
+    ):
         log.warning("Unexpected payload: %r", raw_line)
         return None
 
     return reading
 
 
-def write_window(write_api, buffers: dict[str, list[float]]) -> None:
-    for sensor_id, temps in buffers.items():
-        if not temps:
+def write_window(
+    write_api,
+    buffers: dict[str, list[tuple[float, float]]],
+) -> None:
+    for sensor_id, readings in buffers.items():
+        if not readings:
             continue
 
-        avg_temp = sum(temps) / len(temps)
+        hot_temps = [reading[0] for reading in readings]
+        cold_temps = [reading[1] for reading in readings]
+
+        avg_temp = sum(hot_temps) / len(hot_temps)
+        avg_cold_temp = sum(cold_temps) / len(cold_temps)
 
         point = (
             Point(MEASUREMENT)
             .field("sample_temperature", avg_temp)
+            .field("cold_temp", avg_cold_temp)
         )
 
         write_api.write(bucket=INFLUX_BUCKET, record=point)
 
         log.info(
-            "Wrote sample_temperature=%.2f (n=%d)",
+            "Wrote sample_temperature=%.2f, cold_temp=%.2f (n=%d)",
             avg_temp,
-            len(temps),
+            avg_cold_temp,
+            len(readings),
         )
-        print(f"Wrote sample_temperature={avg_temp:.2f} (n={len(temps)})")
+        print(
+            f"Wrote sample_temperature={avg_temp:.2f}, "
+            f"cold_temp={avg_cold_temp:.2f} "
+            f"(n={len(readings)})"
+        )
+
 
 def run() -> None:
     args = parse_args()
@@ -124,7 +142,7 @@ def run() -> None:
     )
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
-    buffers: dict[str, list[float]] = defaultdict(list)
+    buffers: dict[str, list[tuple[float, float]]] = defaultdict(list)
     window_start = time.monotonic()
 
     try:
@@ -154,7 +172,10 @@ def run() -> None:
 
                             if status == "ok":
                                 buffers[sensor_id].append(
-                                    float(reading["temp"])
+                                    (
+                                        float(reading["hot_temp"]),
+                                        float(reading["cold_temp"]),
+                                    )
                                 )
                             else:
                                 log.warning(
