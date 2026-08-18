@@ -47,7 +47,7 @@ def update_config_key(**kwargs):
 
 
 
-
+DEFAULT_COOL_DOWN_STOP_TEMP = 100.0
 
 def calculate_profile_times(profile: dict, config: dict) -> tuple[float, float]:
     """
@@ -64,7 +64,7 @@ def calculate_profile_times(profile: dict, config: dict) -> tuple[float, float]:
     t_ambient = limits.get("t_ambient", 30.0)
 
     # Target temperature to end cooling estimate (e.g. 100.0 °C)
-    cool_down_stop_temp = limits.get("cool_down_stop_temp", 100.0)
+    cool_down_stop_temp = profile.get("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)
 
     # Resolve half-life in minutes from decay_rate_h1 (h^-1), half_life_h (hours), or half_life_min
     if "decay_rate_h1" in limits and limits["decay_rate_h1"] > 0:
@@ -187,13 +187,14 @@ def validate_profile(profile: dict):
     return warnings
 
 
-def generate_profiles(profile: dict, config: dict = None):
+def generate_profiles(profile: dict, config: dict = None, include_cool_down: bool = True):
     """Generate setpoint profile coordinates, simulated physical temperature curve, annotations, and segment timelines."""
     if config is None:
         config = load_app_config()
 
     limits = config.get("limits", {})
     t_ambient = limits.get("t_ambient", 30.0)
+    cool_down_stop_temp = profile.get("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)
 
     # Determine decay rate k (in min^-1)
     if "decay_rate_h1" in limits and limits["decay_rate_h1"] > 0:
@@ -221,8 +222,6 @@ def generate_profiles(profile: dict, config: dict = None):
     def simulate_step(start_sp: float, target_sp: float, duration_min: float):
         nonlocal t_min, curr_sim_temp
         elapsed = 0.0
-
-        # Calculate slope of commanded setpoint ramp (°C/min)
         sp_slope = (target_sp - start_sp) / duration_min if duration_min > 0 else 0.0
 
         while elapsed < duration_min:
@@ -230,18 +229,13 @@ def generate_profiles(profile: dict, config: dict = None):
             elapsed += step
             t_min += step
 
-            # Dynamic setpoint at this exact moment in time
             inst_sp = start_sp + sp_slope * elapsed
 
             if curr_sim_temp < inst_sp:
-                # Temperature is below setpoint -> Heating ON
-                # Heat up toward dynamic setpoint, capped by hardware max_heating_rate
                 needed_rate = (inst_sp - curr_sim_temp) / step if step > 0 else max_heating_rate
                 applied_rate = min(max_heating_rate, needed_rate)
                 curr_sim_temp += applied_rate * step
             else:
-                # Temperature is at or above setpoint -> Heating OFF
-                # Cool down via natural ambient thermal decay
                 natural_cooling_rate = k_min * (curr_sim_temp - t_ambient)
                 curr_sim_temp -= natural_cooling_rate * step
 
@@ -313,11 +307,30 @@ def generate_profiles(profile: dict, config: dict = None):
 
         segment_info.append({"start": segment_start_h, "end": t_min / 60.0, "title": title})
 
+    # Optional Post-Profile Cooldown Phase down to cool_down_stop_temp
+    if include_cool_down and curr_sim_temp > cool_down_stop_temp:
+        cool_start_h = t_min / 60.0
+
+        while curr_sim_temp > cool_down_stop_temp and curr_sim_temp > (t_ambient + 0.1):
+            t_min += dt
+            natural_cooling_rate = k_min * (curr_sim_temp - t_ambient)
+            curr_sim_temp -= natural_cooling_rate * dt
+            sim_time_min.append(t_min)
+            sim_temp.append(curr_sim_temp)
+
+        cool_end_h = t_min / 60.0
+        segment_info.append({
+            "start": cool_start_h,
+            "end": cool_end_h,
+            "title": f"Cooldown to {cool_down_stop_temp:.0f}°C"
+        })
+
     sim_time_h = [t / 60.0 for t in sim_time_min]
 
     return sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info
 
-def plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info):
+
+def plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info, cool_down_stop_temp: float = None):
     """Build and return an interactive Plotly figure comparing Setpoint and Simulated Temp."""
     fig = go.Figure()
     colors = [
@@ -344,7 +357,7 @@ def plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, seg
         line=dict(color='#d62728', width=2.5, dash='dash')
     ))
 
-    # Commanded Setpoint Target: Plain (Solid line)
+    # Commanded Setpoint Target: Solid line
     fig.add_trace(go.Scatter(
         x=sp_time, y=sp_temp,
         mode='lines+markers',
@@ -352,7 +365,15 @@ def plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, seg
         line=dict(color='#1f77b4', width=2)
     ))
 
-
+    # Optional Horizontal Threshold Line
+    if cool_down_stop_temp is not None:
+        fig.add_hline(
+            y=cool_down_stop_temp,
+            line_dash="dot",
+            line_color="gray",
+            annotation_text=f"Cool Stop ({cool_down_stop_temp:.0f}°C)",
+            annotation_position="bottom right"
+        )
 
     for ann in annotations:
         fig.add_annotation(

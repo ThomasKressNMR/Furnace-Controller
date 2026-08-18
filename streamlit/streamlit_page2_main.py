@@ -29,6 +29,7 @@ from profile_utils import (
 # =============================================================================
 
 MAX_LOG_LINES = 1000
+DEFAULT_COOL_DOWN_STOP_TEMP = 100.0
 
 SERVICES = {
     "profile": {
@@ -386,6 +387,14 @@ with st.sidebar:
         st.error(f"Directory not found: {profile_dir}")
         st.session_state.selected_profile = ""
 
+    st.divider()
+    # Sidebar checkbox to toggle plotting natural cool-down phase
+    include_cooldown = st.checkbox(
+        "Plot natural cool-down to limit",
+        value=True,
+        help="Extends the simulation past the final segment down to the recipe's cool_down_stop_temp."
+    )
+
 # =============================================================================
 # 3-Column Services Control
 # =============================================================================
@@ -407,7 +416,7 @@ for col, (service_id, service) in zip(service_cols, SERVICES.items()):
                     disabled=running,
                     on_click=start_process,
                     args=(service_id,),
-                    width='content',
+                    use_container_width=True,
                 )
             with b_col2:
                 st.button(
@@ -416,7 +425,7 @@ for col, (service_id, service) in zip(service_cols, SERVICES.items()):
                     disabled=not running,
                     on_click=stop_process,
                     args=(service_id,),
-                    width='content',
+                    use_container_width=True,
                 )
 
             status_text = "🟢 Running" if running else "🔴 Stopped"
@@ -502,8 +511,23 @@ def render_dashboard():
             for warn in warnings:
                 st.warning(warn)
 
-            sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info = generate_profiles(selected_profile_data)
-            fig = plot_profile_plotly(sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info)
+            # Retrieve cool down stop temp directly from the JSON profile
+            cool_stop_temp = selected_profile_data.get("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)
+
+            sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info = generate_profiles(
+                selected_profile_data,
+                include_cool_down=include_cooldown
+            )
+
+            fig = plot_profile_plotly(
+                sp_time,
+                sp_temp,
+                sim_time_h,
+                sim_temp,
+                annotations,
+                segment_info,
+                cool_down_stop_temp=cool_stop_temp if include_cooldown else None
+            )
             st.plotly_chart(fig, width='stretch')
         except Exception as err:
             st.error(f"Could not load or plot selected profile: {err}")

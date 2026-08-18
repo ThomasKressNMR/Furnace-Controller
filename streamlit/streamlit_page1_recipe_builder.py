@@ -9,15 +9,10 @@ Run with:
 
 import copy
 import json
+import uuid
 from pathlib import Path
 
 import plotly.graph_objects as go
-import streamlit as st
-
-import copy
-import json
-from pathlib import Path
-
 import streamlit as st
 from profile_utils import (
     CONFIG_FILE_PATH,
@@ -34,9 +29,10 @@ from profile_utils import (
 PARAM_FILE_PATH = Path("param.json")
 CONFIG_FILE_PATH = Path("config.json")
 SEGMENT_TYPES = ["hold", "rate-limited", "time-limited"]
+DEFAULT_COOL_DOWN_STOP_TEMP = 100.0
 
 # ----------------------------------------------------------------------
-# Hardcoded Hard & Operating Limits
+# Config & Limits Loading
 # ----------------------------------------------------------------------
 
 def load_config():
@@ -58,23 +54,24 @@ CONTINUOUS_TEMP_LIMIT = MAX_TEMP - 100.0
 
 
 # ----------------------------------------------------------------------
-# Config & State Initialization
+# State Initialization
 # ----------------------------------------------------------------------
-
 
 def load_default_profile() -> dict:
     """Load default profile strictly from param.json or create fallback dict."""
     if PARAM_FILE_PATH.exists():
         try:
             with open(PARAM_FILE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                p = json.load(f)
+                p.setdefault("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)
+                return p
         except Exception as e:
             st.error(f"Failed to load `{PARAM_FILE_PATH}`: {e}")
             st.stop()
 
-    # Fallback default structure if param.json doesn't exist yet
     return {
         "start_temperature": 25.0,
+        "cool_down_stop_temp": DEFAULT_COOL_DOWN_STOP_TEMP,
         "segments": []
     }
 
@@ -82,7 +79,6 @@ def load_default_profile() -> dict:
 st.set_page_config(page_title="Temperature Profile Builder", layout="wide")
 st.title("Furnace Temperature Profile Builder")
 
-# Load configuration on startup
 app_config = load_app_config()
 
 if "folder_path" not in st.session_state:
@@ -91,7 +87,6 @@ if "folder_path" not in st.session_state:
 if "filename_input" not in st.session_state:
     st.session_state.filename_input = app_config.get("last_file", "profile.json")
 
-# On initial load, attempt to load the last selected file from target directory
 if "profile" not in st.session_state:
     target_dir = Path(st.session_state.folder_path)
     last_file_path = target_dir / st.session_state.filename_input
@@ -106,21 +101,20 @@ if "profile" not in st.session_state:
         st.session_state.profile = load_default_profile()
 
 profile = st.session_state.profile
+profile.setdefault("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)
 
 
 # ----------------------------------------------------------------------
-# Helper Functions & Callbacks
+# Helper Callbacks
 # ----------------------------------------------------------------------
 
 def list_json_files(folder_path: Path) -> list[str]:
-    """Return a sorted list of .json file names in the target directory."""
     if not folder_path.exists() or not folder_path.is_dir():
         return []
     return sorted([f.name for f in folder_path.glob("*.json")])
 
 
 def on_select_file():
-    """Triggered automatically when a file selection changes in the selectbox."""
     selected = st.session_state.get("file_select_key")
     target_dir_str = st.session_state.get("folder_path", ".")
     target_dir = Path(target_dir_str)
@@ -132,39 +126,23 @@ def on_select_file():
                 st.session_state.profile = json.load(f)
             st.session_state.filename_input = selected
             st.session_state.upload_status = ("success", f"Loaded `{selected}` successfully!")
-
-            # Update ONLY the last_file key in config.json
             update_config_key(last_file=selected)
         except Exception as e:
             st.session_state.upload_status = ("error", f"Failed to load `{selected}`: {e}")
 
 
 def on_folder_path_change():
-    """Save updated folder path to config.json when modified by the user."""
     current_path = st.session_state.get("folder_path", ".")
-
-    # Update ONLY the default_folder_path key in config.json
     update_config_key(default_folder_path=current_path)
-
-# ----------------------------------------------------------------------
-# Core logic (validation + generation)
-# ----------------------------------------------------------------------
-
 
 
 # ----------------------------------------------------------------------
 # Sidebar Controls
 # ----------------------------------------------------------------------
-import copy
-import json
-import uuid
-from pathlib import Path
-import streamlit as st
 
 with st.sidebar:
     st.header("File Operations")
 
-    # Folder Path input triggers automatic save to config.json when edited
     target_dir_str = st.text_input(
         "Folder Path",
         key="folder_path",
@@ -203,15 +181,18 @@ with st.sidebar:
         del st.session_state.upload_status
 
     st.divider()
-    st.header("Segments")
+    st.header("Recipe Parameters")
 
     profile["start_temperature"] = st.number_input(
-        "Start temperature (°C)", value=float(profile.get("start_temperature", 25.0))
+        "Start temp (°C)",
+        value=float(profile.get("start_temperature", 25.0))
     )
+
+
+    st.subheader("Segments")
 
     segments = profile.setdefault("segments", [])
 
-    # Ensure every segment has a permanent, unique identifier for widget keys
     for seg in segments:
         if "_id" not in seg:
             seg["_id"] = str(uuid.uuid4())
@@ -269,7 +250,6 @@ with st.sidebar:
                 seg.pop("target", None)
                 seg.pop("rate", None)
 
-            # Reorganization buttons with stable UUID keys
             b_col1, b_col2 = st.columns(2)
             if b_col1.button("Move Up", key=f"up_{seg_id}", disabled=(i == 0), use_container_width=True):
                 segments[i - 1], segments[i] = segments[i], segments[i - 1]
@@ -298,25 +278,29 @@ with st.sidebar:
         })
         st.rerun()
 
+    profile["cool_down_stop_temp"] = st.number_input(
+        "Cool Stop temp (°C)",
+        value=float(profile.get("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)),
+        min_value=0.0,
+        max_value=MAX_TEMP
+    )
+
     st.divider()
     filename = st.text_input("Save File Name", key="filename_input")
     if not filename.endswith(".json"):
         filename += ".json"
 
-    # Compute and append both duration metrics directly into the profile dictionary
+    # Calculate profile times using the recipe's cool_down_stop_temp
     recipe_time, actual_time = calculate_profile_times(profile, config)
     profile["recipe_time_min"] = recipe_time
     profile["estimated_total_time_min"] = actual_time
 
-    # Remove old key if present from earlier versions
     profile.pop("total_experiment_time_min", None)
 
-    # Clean internal IDs before serialization so JSON stays clean
     clean_profile = copy.deepcopy(profile)
     for seg in clean_profile.get("segments", []):
         seg.pop("_id", None)
 
-    # Display summary metrics in UI sidebar
     st.caption(f"⏱️ Recipe Time: {recipe_time:.1f} min ({recipe_time / 60:.2f} h)")
     st.caption(f"🔥 Est. Total Time: {actual_time:.1f} min ({actual_time / 60:.2f} h)")
 
@@ -333,10 +317,7 @@ with st.sidebar:
                     with open(save_path, "w", encoding="utf-8") as f:
                         f.write(profile_json)
 
-                    # Update config with current folder and saved file name
-                    print(filename, target_dir)
                     update_config_key(last_file=filename)
-
                     st.success(f"Saved to `{save_path}`!")
                     st.rerun()
                 except Exception as e:
@@ -355,6 +336,12 @@ with st.sidebar:
 # Main Dashboard Section
 # ----------------------------------------------------------------------
 
+include_cooldown = st.sidebar.checkbox(
+    "Plot natural cool-down to limit",
+    value=True,
+    help="Extends the simulation past the final segment down to cool_down_stop_temp."
+)
+
 try:
     warnings = validate_profile(profile)
     for warning_msg in warnings:
@@ -362,8 +349,24 @@ try:
 except (ValueError, KeyError) as e:
     st.error(f"Invalid profile: {e}")
 else:
-    results = generate_profiles(profile)
-    fig = plot_profile_plotly(*results)
+    sp_time, sp_temp, sim_time_h, sim_temp, annotations, segment_info = generate_profiles(
+        profile,
+        config=config,
+        include_cool_down=include_cooldown
+    )
+
+    cool_stop_temp = profile.get("cool_down_stop_temp", DEFAULT_COOL_DOWN_STOP_TEMP)
+
+    fig = plot_profile_plotly(
+        sp_time,
+        sp_temp,
+        sim_time_h,
+        sim_temp,
+        annotations,
+        segment_info,
+        cool_down_stop_temp=cool_stop_temp if include_cooldown else None
+    )
+
     st.plotly_chart(fig, width='stretch')
 
 st.divider()
