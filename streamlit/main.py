@@ -17,6 +17,8 @@ import streamlit as st
 pages = [
     st.Page("streamlit_page1_recipe_builder.py", title="🧪  Furnace Recipe Builder"),
     st.Page("streamlit_page2_main.py", title="🎛️  Furnace Control Panel"),
+    st.Page("streamlit_page3_gasflow.py", title="💨 Gas flow calculator"),
+
 ]
 
 

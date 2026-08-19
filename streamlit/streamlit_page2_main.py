@@ -486,7 +486,7 @@ def render_dashboard():
     # Duration Totals Row
     m4, m5, m6 = st.columns(3)
     m4.metric("Recipe Duration", format_time_min(recipe_time_min) if recipe_time_min > 0 else "—")
-    m5.metric("Est. Cool Down Time", format_time_min(cooling_time_min) if cooling_time_min > 0 else "—")
+    m5.metric("Est. Extra Cool Down Time", format_time_min(cooling_time_min) if cooling_time_min > 0 else "—")
     m6.metric("Total Est. Duration", format_time_min(est_total_time_min) if est_total_time_min > 0 else "—")
 
     # Dynamic Countdown Counters Row
